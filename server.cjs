@@ -9,7 +9,7 @@ const ImageKit = require("imagekit");
 const { Mux } = require('@mux/mux-node');
 const fs = require('fs');
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000; // Use Render's PORT or fallback to 3000
 
 // Multer config for other uploads (not used for direct Mux upload)
 const upload = multer({
@@ -390,5 +390,5 @@ app.post('/login', (req, res) => {
 });
 
 app.listen(port, () => {
-     console.log(`Server is running on http://localhost:${port}`);
+     console.log(`Server is running on port ${port}`);
 });
