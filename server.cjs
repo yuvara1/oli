@@ -9,8 +9,18 @@ const ImageKit = require("imagekit");
 const { Mux } = require('@mux/mux-node');
 const fs = require('fs');
 const app = express();
-const port = process.env.PORT || 3000; // Use Render's PORT or fallback to 3000
+const port = 3000;
 
+app.use(cors({
+     origin: [
+          'http://localhost:5173',
+          'http://localhost:3000',
+          'https://your-frontend-domain.com' // Add your deployed frontend URL
+     ],
+     credentials: true,
+     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+     allowedHeaders: ['Content-Type', 'Authorization']
+}));
 // Multer config for other uploads (not used for direct Mux upload)
 const upload = multer({
      storage: multer.diskStorage({
@@ -390,5 +400,5 @@ app.post('/login', (req, res) => {
 });
 
 app.listen(port, () => {
-     console.log(`Server is running on port ${port}`);
+     console.log(`Server is running on http://localhost:${port}`);
 });
