@@ -14,7 +14,8 @@ app.use(cors({
      origin: [
           'http://localhost:5173',
           'http://localhost:3000',
-          'https://your-frontend-domain.com'
+          'https://olii-ott.web.app/',
+          'https://olii-ott.web.app'
      ],
      credentials: true,
      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
