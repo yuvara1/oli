@@ -258,24 +258,74 @@ app.post('/login', async (req, res) => {
           res.status(500).json({ error: 'Database error' });
      }
 });
+// Check premium status endpoint
+app.get('/check-premium/:userId', async (req, res) => {
+     const userId = req.params.userId;
+
+     if (!userId) {
+          return res.status(400).json({
+               success: false,
+               error: 'User ID is required'
+          });
+     }
+
+     try {
+          // Get user premium status from database
+          const userResults = await queryDB('SELECT premium FROM users WHERE id = ?', [userId]);
+
+          if (userResults.length === 0) {
+               return res.status(404).json({
+                    success: false,
+                    error: 'User not found'
+               });
+          }
+
+          const isPremium = userResults[0].premium === 1;
+
+          res.json({
+               success: true,
+               isPremium: isPremium,
+               userId: userId
+          });
+
+     } catch (err) {
+          console.error('Error checking premium status:', err);
+          res.status(500).json({
+               success: false,
+               error: 'Error checking premium status'
+          });
+     }
+});
+
+// Get user ID by username endpoint
 app.get('/get-user-id/:username', async (req, res) => {
      const username = req.params.username;
 
      if (!username) {
-          return res.status(400).json({ error: 'Username is required' });
+          return res.status(400).json({
+               error: 'Username is required'
+          });
      }
 
      try {
-          const results = await queryDB('SELECT id FROM users WHERE username = ?', [username]);
+          const userResults = await queryDB('SELECT id FROM users WHERE username = ?', [username]);
 
-          if (results.length > 0) {
-               return res.json({ id: results[0].id });
-          } else {
-               return res.status(404).json({ error: 'User not found' });
+          if (userResults.length === 0) {
+               return res.status(404).json({
+                    error: 'User not found'
+               });
           }
+
+          res.json({
+               id: userResults[0].id,
+               username: username
+          });
+
      } catch (err) {
-          console.error('Database error:', err);
-          res.status(500).json({ error: 'Database error' });
+          console.error('Error fetching user ID:', err);
+          res.status(500).json({
+               error: 'Error fetching user ID'
+          });
      }
 });
 // 4. User registration
@@ -796,15 +846,7 @@ app.get('/health', (req, res) => {
      });
 });
 
-// Start server
-app.listen(port, () => {
-     console.log(`Server is running on http://localhost:${port}`);
-     console.log('CORS enabled for:');
-     console.log('- http://localhost:5173');
-     console.log('- http://localhost:3000');
-     console.log('- https://appsail-50028934332.development.catalystappsail.in');
-     console.log('- https://olii-ott.web.app');
-});
+
 
 // Add this new endpoint after your other endpoints
 app.get('/check-premium/:userId', async (req, res) => {
@@ -877,4 +919,217 @@ app.post('/set-premium/:userId', async (req, res) => {
           console.error('Error setting premium status:', err);
           res.status(500).json({ error: 'Error setting premium status' });
      }
+});
+app.post('/apply-promo', async (req, res) => {
+     console.log('Promo code application request:', req.body);
+
+     const { promoCode, userId } = req.body;
+
+     if (!promoCode || !userId) {
+          return res.status(400).json({
+               success: false,
+               error: 'Promo code and user ID are required'
+          });
+     }
+
+     try {
+          // Check if user exists
+          const userResults = await queryDB('SELECT * FROM users WHERE id = ?', [userId]);
+
+          if (userResults.length === 0) {
+               return res.status(404).json({
+                    success: false,
+                    error: 'User not found'
+               });
+          }
+
+          // Check if user already has premium
+          if (userResults[0].premium === 1) {
+               return res.json({
+                    success: false,
+                    error: 'You already have premium access'
+               });
+          }
+
+          // Validate promo code (case insensitive)
+          const validPromoCodes = ['USEOLI', 'FREEACCESS', 'PREMIUM2024'];
+          const normalizedPromoCode = promoCode.trim().toUpperCase();
+
+          if (!validPromoCodes.includes(normalizedPromoCode)) {
+               console.log(`Invalid promo code attempted: ${normalizedPromoCode}`);
+               return res.json({
+                    success: false,
+                    error: 'Invalid promo code. Please check and try again.'
+               });
+          }
+
+          console.log(`Applying promo code ${normalizedPromoCode} for user ${userId}`);
+
+          // Check if user has already used this promo code
+          const existingPromo = await queryDB(
+               'SELECT * FROM promo_codes WHERE user_id = ? AND promo_code = ?',
+               [userId, normalizedPromoCode]
+          );
+
+          if (existingPromo.length > 0) {
+               return res.json({
+                    success: false,
+                    error: 'You have already used this promo code'
+               });
+          }
+
+          // Update user premium status
+          await queryDB(
+               'UPDATE users SET premium = 1 WHERE id = ?',
+               [userId]
+          );
+
+          // Record promo code usage
+          await queryDB(
+               'INSERT INTO promo_codes (user_id, promo_code, duration_days) VALUES (?, ?, ?)',
+               [userId, normalizedPromoCode, 30] // 30 days free access
+          );
+
+          // Create user subscription entry if table exists
+          try {
+               await queryDB(`
+                    CREATE TABLE IF NOT EXISTS user_subscriptions (
+                         id INT PRIMARY KEY AUTO_INCREMENT,
+                         user_id INT,
+                         plan_type VARCHAR(50),
+                         start_date DATE,
+                         end_date DATE,
+                         status ENUM('active', 'expired', 'cancelled') DEFAULT 'active',
+                         payment_id VARCHAR(255),
+                         promo_code VARCHAR(50),
+                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                         FOREIGN KEY (user_id) REFERENCES users(id)
+                    )
+               `);
+
+               // Insert subscription record
+               await queryDB(
+                    'INSERT INTO user_subscriptions (user_id, plan_type, start_date, end_date, promo_code) VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL 30 DAY), ?)',
+                    [userId, 'promo', normalizedPromoCode]
+               );
+          } catch (subscriptionError) {
+               console.error('Error creating subscription record:', subscriptionError);
+               // Continue without failing the main operation
+          }
+
+          console.log(`Promo code ${normalizedPromoCode} successfully applied for user ${userId}`);
+
+          res.json({
+               success: true,
+               message: 'Promo code applied successfully! You now have 30 days of premium access.',
+               promoCode: normalizedPromoCode,
+               durationDays: 30,
+               premiumUntil: new Date(Date.now() + (30 * 24 * 60 * 60 * 1000)).toISOString()
+          });
+
+     } catch (err) {
+          console.error('Error applying promo code:', err);
+
+          if (err.code === 'ER_DUP_ENTRY') {
+               res.status(409).json({
+                    success: false,
+                    error: 'You have already used this promo code'
+               });
+          } else {
+               res.status(500).json({
+                    success: false,
+                    error: 'Error applying promo code. Please try again.'
+               });
+          }
+     }
+});
+
+// Get user promo code history
+app.get('/user-promos/:userId', async (req, res) => {
+     const userId = req.params.userId;
+
+     if (!userId) {
+          return res.status(400).json({ error: 'User ID is required' });
+     }
+
+     try {
+          const promos = await queryDB(
+               'SELECT promo_code, applied_at, duration_days, status FROM promo_codes WHERE user_id = ? ORDER BY applied_at DESC',
+               [userId]
+          );
+
+          res.json({
+               success: true,
+               promos: promos
+          });
+     } catch (err) {
+          console.error('Error fetching user promos:', err);
+          res.status(500).json({
+               success: false,
+               error: 'Error fetching promo history'
+          });
+     }
+});
+
+// Validate promo code without applying (optional endpoint for checking)
+app.post('/validate-promo', async (req, res) => {
+     const { promoCode, userId } = req.body;
+
+     if (!promoCode) {
+          return res.status(400).json({
+               valid: false,
+               error: 'Promo code is required'
+          });
+     }
+
+     try {
+          const validPromoCodes = ['USEOLI', 'FREEACCESS', 'PREMIUM2024'];
+          const normalizedPromoCode = promoCode.trim().toUpperCase();
+
+          if (!validPromoCodes.includes(normalizedPromoCode)) {
+               return res.json({
+                    valid: false,
+                    error: 'Invalid promo code'
+               });
+          }
+
+          // If userId provided, check if already used
+          if (userId) {
+               const existingPromo = await queryDB(
+                    'SELECT * FROM promo_codes WHERE user_id = ? AND promo_code = ?',
+                    [userId, normalizedPromoCode]
+               );
+
+               if (existingPromo.length > 0) {
+                    return res.json({
+                         valid: false,
+                         error: 'Promo code already used'
+                    });
+               }
+          }
+
+          res.json({
+               valid: true,
+               promoCode: normalizedPromoCode,
+               durationDays: 30,
+               message: 'Valid promo code - 30 days premium access'
+          });
+
+     } catch (err) {
+          console.error('Error validating promo code:', err);
+          res.status(500).json({
+               valid: false,
+               error: 'Error validating promo code'
+          });
+     }
+});
+
+// Start server
+app.listen(port, () => {
+     console.log(`Server is running on http://localhost:${port}`);
+     console.log('CORS enabled for:');
+     console.log('- http://localhost:5173');
+     console.log('- http://localhost:3000');
+     console.log('- https://appsail-50028934332.development.catalystappsail.in');
+     console.log('- https://olii-ott.web.app');
 });
