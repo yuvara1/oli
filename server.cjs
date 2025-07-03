@@ -6,21 +6,55 @@ const mysql = require('mysql2');
 const multer = require('multer');
 const ImageKit = require("imagekit");
 const { Mux } = require('@mux/mux-node');
+const Razorpay = require('razorpay');
+const crypto = require('crypto');
 const app = express();
 const port = 3000;
 
-// CORS configuration
-app.use(cors({
-     origin: [
+// Razorpay initialization
+const razorpay = new Razorpay({
+     key_id: process.env.RAZORPAY_KEY_ID,
+     key_secret: process.env.RAZORPAY_KEY_SECRET
+});
+
+// Add error checking for Razorpay credentials
+if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+     console.error('Razorpay credentials missing! Please check your .env file');
+     console.log('Required variables: RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET');
+     process.exit(1);
+}
+
+console.log('Razorpay initialized successfully');
+
+// Simplified and more reliable CORS configuration
+app.use((req, res, next) => {
+     const allowedOrigins = [
           'http://localhost:5173',
           'http://localhost:3000',
-          'https://olii-ott.web.app/',
+          'https://appsail-50028934332.development.catalystappsail.in',
           'https://olii-ott.web.app'
-     ],
-     credentials: true,
-     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-     allowedHeaders: ['Content-Type', 'Authorization']
-}));
+     ];
+
+     const origin = req.headers.origin;
+
+     // Allow requests from allowed origins or if no origin (same-origin requests)
+     if (allowedOrigins.includes(origin) || !origin) {
+          res.header('Access-Control-Allow-Origin', origin || '*');
+     }
+
+     res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+     res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+     res.header('Access-Control-Allow-Credentials', 'true');
+     res.header('Access-Control-Max-Age', '3600');
+
+     // Handle preflight requests
+     if (req.method === 'OPTIONS') {
+          res.status(200).end();
+          return;
+     }
+
+     next();
+});
 
 // Body parser middleware
 app.use(bodyParser.json({ limit: '1024mb' }));
@@ -121,7 +155,22 @@ app.get('/movie/:id', async (req, res) => {
           res.status(500).json({ error: 'Database error' });
      }
 });
+app.get('/movies/:id', async (req, res) => {
+     const movieId = req.params.id;
+     try {
+          const results = await queryDB('SELECT * FROM movieslist WHERE id = ?', [movieId]);
+          if (!results.length) {
+               return res.status(404).json({ error: 'Movie not found' });
+          }
+          res.json(results[0]);
+     } catch (err) {
+          console.error('Database error:', err);
+          res.status(500).json({ error: 'Database error' });
+     }
+});
 
+
+// Google OAuth login endpoint
 app.post('/google-login', async (req, res) => {
      console.log('Google login request received', { username: req.body.username, email: req.body.email });
      const { email, username } = req.body;
@@ -131,7 +180,7 @@ app.post('/google-login', async (req, res) => {
      }
 
      try {
-          // Check if user already exists with longer timeout
+          // Check if user already exists
           console.log('Checking if user exists...');
           const existingUsers = await Promise.race([
                queryDB('SELECT * FROM users WHERE email = ?', [email]),
@@ -144,15 +193,16 @@ app.post('/google-login', async (req, res) => {
                     id: existingUsers[0].id,
                     username: existingUsers[0].username,
                     email: existingUsers[0].email,
+                    premium: existingUsers[0].premium === 1, // Include premium status
                     message: 'Login successful'
                });
           }
 
-          // Create new user
+          // Create new user with premium defaulting to false (0)
           console.log('Creating new user...');
           const result = await Promise.race([
-               queryDB('INSERT INTO users (username, email, password) VALUES (?, ?, ?)',
-                    [username, email, 'google-auth']),
+               queryDB('INSERT INTO users (username, email, password, premium) VALUES (?, ?, ?, ?)',
+                    [username, email, 'google-auth', 0]), // Set premium to 0 by default
                new Promise((_, reject) => setTimeout(() => reject(new Error('Database insert timeout')), 10000))
           ]);
 
@@ -161,6 +211,7 @@ app.post('/google-login', async (req, res) => {
                id: result.insertId,
                username,
                email,
+               premium: false, // New users start with premium false
                message: 'Account created and login successful'
           });
      } catch (err) {
@@ -187,13 +238,17 @@ app.post('/login', async (req, res) => {
           return res.status(400).json({ error: 'Username and password are required' });
      }
 
+
      try {
           const query = 'SELECT * FROM users WHERE (username = ? OR email = ?) AND password = ?';
           const results = await queryDB(query, [username, username, password]);
 
           if (results.length > 0) {
                console.log('User found:', results[0]);
-               return res.json(results[0]);
+               return res.json({
+                    ...results[0],
+                    premium: results[0].premium === 1 // Convert tinyint to boolean
+               });
           } else {
                console.log('Invalid credentials');
                return res.status(401).json({ error: 'Invalid username or password' });
@@ -203,9 +258,30 @@ app.post('/login', async (req, res) => {
           res.status(500).json({ error: 'Database error' });
      }
 });
+app.get('/get-user-id/:username', async (req, res) => {
+     const username = req.params.username;
 
+     if (!username) {
+          return res.status(400).json({ error: 'Username is required' });
+     }
+
+     try {
+          const results = await queryDB('SELECT id FROM users WHERE username = ?', [username]);
+
+          if (results.length > 0) {
+               return res.json({ id: results[0].id });
+          } else {
+               return res.status(404).json({ error: 'User not found' });
+          }
+     } catch (err) {
+          console.error('Database error:', err);
+          res.status(500).json({ error: 'Database error' });
+     }
+});
 // 4. User registration
 app.post('/register', async (req, res) => {
+     console.log('Registration request received');
+     console.log('Request body:', req.body);
      const { username, email, password } = req.body;
 
      if (!username || !email || !password) {
@@ -366,6 +442,8 @@ app.get('/series/:id', async (req, res) => {
      }
 });
 
+
+
 // Upload series to ImageKit and save to database
 app.post('/upload-series', memoryUpload.fields([
      { name: 'poster', maxCount: 1 },
@@ -434,8 +512,369 @@ app.delete('/series/:id', async (req, res) => {
      }
 });
 
+//premium handles
+app.post('/create-order', async (req, res) => {
+     console.log('Create order request:', req.body);
+
+     const { amount, currency = 'INR', receipt, userId } = req.body;
+
+     // Validation
+     if (!amount || amount <= 0) {
+          return res.status(400).json({
+               success: false,
+               error: 'Valid amount is required'
+          });
+     }
+
+     try {
+          // Create order with Razorpay with minimal verification
+          const options = {
+               amount: parseInt(amount),
+               currency: currency,
+               receipt: receipt || `rcpt_${Date.now()}_${userId || 'anon'}`,
+               notes: {
+                    user_id: userId || '',
+                    created_at: new Date().toISOString(),
+                    skip_verification: 'true' // Note for internal tracking
+               },
+               // Add payment capture settings
+               payment_capture: 1, // Auto capture
+          };
+
+          console.log('Creating Razorpay order with options:', options);
+
+          const razorpayOrder = await razorpay.orders.create(options);
+
+          console.log('Razorpay order created:', razorpayOrder);
+
+          // Store order in database
+          const result = await queryDB(
+               'INSERT INTO orders (razorpay_order_id, amount, currency, receipt, status, user_id) VALUES (?, ?, ?, ?, ?, ?)',
+               [razorpayOrder.id, amount, currency, razorpayOrder.receipt, 'created', userId || null]
+          );
+
+          console.log('Order saved to database with ID:', result.insertId);
+
+          res.json({
+               success: true,
+               id: razorpayOrder.id,
+               amount: razorpayOrder.amount,
+               currency: razorpayOrder.currency,
+               receipt: razorpayOrder.receipt,
+               orderId: result.insertId
+          });
+
+     } catch (err) {
+          console.error('Error creating Razorpay order:', err);
+
+          if (err.statusCode) {
+               res.status(err.statusCode).json({
+                    success: false,
+                    error: `Payment service error: ${err.error?.description || err.message}`
+               });
+          } else {
+               res.status(500).json({
+                    success: false,
+                    error: 'Failed to create payment order. Please try again.'
+               });
+          }
+     }
+});
+
+// Update the verify-payment endpoint
+app.post('/verify-payment', async (req, res) => {
+     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, user_id, plan_id } = req.body;
+
+     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+          return res.status(400).json({ error: 'All payment parameters are required' });
+     }
+
+     try {
+          // Verify signature
+          const generated_signature = crypto
+               .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+               .update(razorpay_order_id + '|' + razorpay_payment_id)
+               .digest('hex');
+
+          if (generated_signature !== razorpay_signature) {
+               return res.status(400).json({ error: 'Invalid payment signature' });
+          }
+
+          // Update order status in database
+          await queryDB(
+               'UPDATE orders SET status = ?, razorpay_payment_id = ?, razorpay_signature = ?, updated_at = NOW() WHERE razorpay_order_id = ?',
+               ['paid', razorpay_payment_id, razorpay_signature, razorpay_order_id]
+          );
+
+          // **NEW: Update user premium status to true**
+          if (user_id) {
+               await queryDB(
+                    'UPDATE users SET premium = 1 WHERE id = ?',
+                    [user_id]
+               );
+               console.log(`User ${user_id} premium status updated to true`);
+          }
+
+          // Create user subscription if user_id and plan_id are provided
+          if (user_id && plan_id) {
+               let duration_months = 1; // default
+               switch (plan_id) {
+                    case 'basic': duration_months = 1; break;
+                    case 'premium': duration_months = 3; break;
+                    case 'ultimate': duration_months = 12; break;
+               }
+
+               // Check if user_subscriptions table exists, if not create it
+               try {
+                    await queryDB(`
+                    CREATE TABLE IF NOT EXISTS user_subscriptions (
+                        id INT PRIMARY KEY AUTO_INCREMENT,
+                        user_id INT,
+                        plan_type VARCHAR(50),
+                        start_date DATE,
+                        end_date DATE,
+                        status ENUM('active', 'expired', 'cancelled') DEFAULT 'active',
+                        payment_id VARCHAR(255),
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES users(id)
+                    )
+                `);
+
+                    // Insert subscription
+                    await queryDB(
+                         'INSERT INTO user_subscriptions (user_id, plan_type, start_date, end_date, payment_id) VALUES (?, ?, NOW(), DATE_ADD(NOW(), INTERVAL ? MONTH), ?)',
+                         [user_id, plan_id, duration_months, razorpay_payment_id]
+                    );
+               } catch (tableError) {
+                    console.error('Error creating/updating subscription:', tableError);
+                    // Continue without failing the payment verification
+               }
+          }
+
+          res.json({
+               success: true,
+               message: 'Payment verified successfully',
+               payment_id: razorpay_payment_id,
+               premium_updated: true
+          });
+
+     } catch (err) {
+          console.error('Error verifying payment:', err);
+          res.status(500).json({ error: 'Error verifying payment' });
+     }
+});
+
+app.get('/access/:userId', async (req, res) => {
+     const userId = req.params.userId;
+
+     if (!userId) {
+          return res.status(400).json({ error: 'User ID is required' });
+     }
+
+     try {
+          // Check if user has an active subscription
+          const results = await queryDB(
+               'SELECT * FROM user_subscriptions WHERE user_id = ? AND status = ?',
+               [userId, 'active']
+          );
+
+          if (results.length > 0) {
+               return res.json({ access: true, subscription: results[0] });
+          } else {
+               return res.json({ access: false, message: 'No active subscription found' });
+          }
+     } catch (err) {
+          console.error('Error checking access:', err);
+          res.status(500).json({ error: 'Error checking access' });
+     }
+}
+);
+
+// Optional: Add webhook handler for Razorpay
+app.post('/razorpay-webhook', (req, res) => {
+     const secret = process.env.RAZORPAY_WEBHOOK_SECRET;
+     const signature = req.headers['x-razorpay-signature'];
+
+     if (secret) {
+          const generated_signature = crypto
+               .createHmac('sha256', secret)
+               .update(JSON.stringify(req.body))
+               .digest('hex');
+
+          if (generated_signature !== signature) {
+               return res.status(400).json({ error: 'Invalid webhook signature' });
+          }
+     }
+
+     const event = req.body.event;
+     const payment = req.body.payload.payment.entity;
+
+     switch (event) {
+          case 'payment.captured':
+               console.log('Payment captured:', payment.id);
+               break;
+          case 'payment.failed':
+               console.log('Payment failed:', payment.id);
+               break;
+          default:
+               console.log('Unhandled event:', event);
+     }
+
+     res.json({ status: 'ok' });
+});
+
+// Add subscription check endpoint
+app.get('/check-subscription/:userId', async (req, res) => {
+     const userId = req.params.userId;
+
+     if (!userId) {
+          return res.status(400).json({
+               hasSubscription: false,
+               error: 'User ID is required'
+          });
+     }
+
+     try {
+          // First check if user has premium field set to true
+          const userResults = await queryDB(
+               'SELECT premium FROM users WHERE id = ?',
+               [userId]
+          );
+
+          if (userResults.length > 0 && userResults[0].premium === 1) {
+               console.log(`User ${userId} has premium status from users table`);
+               return res.json({
+                    hasSubscription: true,
+                    premium: true,
+                    source: 'user_premium_field'
+               });
+          }
+
+          // Also check user_subscriptions table for active subscription
+          const subscriptionResults = await queryDB(
+               'SELECT * FROM user_subscriptions WHERE user_id = ? AND status = ? AND end_date > NOW()',
+               [userId, 'active']
+          );
+
+          if (subscriptionResults.length > 0) {
+               console.log(`User ${userId} has active subscription from subscriptions table`);
+               return res.json({
+                    hasSubscription: true,
+                    subscription: subscriptionResults[0],
+                    source: 'subscription_table'
+               });
+          } else {
+               console.log(`User ${userId} has no active subscription`);
+               return res.json({
+                    hasSubscription: false,
+                    message: 'No active subscription found'
+               });
+          }
+     } catch (err) {
+          console.error('Error checking subscription:', err);
+          res.status(500).json({
+               hasSubscription: false,
+               error: 'Error checking subscription'
+          });
+     }
+});
+// Add a test endpoint to verify CORS
+app.get('/test-cors', (req, res) => {
+     res.json({
+          message: 'CORS is working!',
+          origin: req.headers.origin,
+          timestamp: new Date().toISOString()
+     });
+});
+
+// Health check endpoint
+app.get('/health', (req, res) => {
+     res.json({
+          status: 'OK',
+          timestamp: new Date().toISOString(),
+          uptime: process.uptime()
+     });
+});
+
 // Start server
 app.listen(port, () => {
      console.log(`Server is running on http://localhost:${port}`);
+     console.log('CORS enabled for:');
+     console.log('- http://localhost:5173');
+     console.log('- http://localhost:3000');
+     console.log('- https://appsail-50028934332.development.catalystappsail.in');
+     console.log('- https://olii-ott.web.app');
 });
 
+// Add this new endpoint after your other endpoints
+app.get('/check-premium/:userId', async (req, res) => {
+     const userId = req.params.userId;
+
+     if (!userId) {
+          return res.status(400).json({
+               success: false,
+               error: 'User ID is required'
+          });
+     }
+
+     try {
+          const results = await queryDB(
+               'SELECT id, username, email, premium FROM users WHERE id = ?',
+               [userId]
+          );
+
+          if (results.length > 0) {
+               const user = results[0];
+               const isPremium = user.premium === 1;
+
+               console.log(`Premium check for user ${userId}: ${isPremium}`);
+
+               res.json({
+                    success: true,
+                    user: {
+                         id: user.id,
+                         username: user.username,
+                         email: user.email,
+                         premium: isPremium
+                    },
+                    isPremium: isPremium
+               });
+          } else {
+               res.status(404).json({
+                    success: false,
+                    error: 'User not found'
+               });
+          }
+     } catch (err) {
+          console.error('Error checking premium status:', err);
+          res.status(500).json({
+               success: false,
+               error: 'Error checking premium status'
+          });
+     }
+});
+// Add endpoint to manually set premium status (for testing)
+app.post('/set-premium/:userId', async (req, res) => {
+     const userId = req.params.userId;
+     const { premium } = req.body; // true or false
+
+     if (!userId) {
+          return res.status(400).json({ error: 'User ID is required' });
+     }
+
+     try {
+          await queryDB(
+               'UPDATE users SET premium = ? WHERE id = ?',
+               [premium ? 1 : 0, userId]
+          );
+
+          res.json({
+               success: true,
+               message: `User ${userId} premium status set to ${premium}`,
+               premium: premium
+          });
+     } catch (err) {
+          console.error('Error setting premium status:', err);
+          res.status(500).json({ error: 'Error setting premium status' });
+     }
+});
