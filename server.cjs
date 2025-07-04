@@ -113,6 +113,14 @@ const imagekit = new ImageKit({
      urlEndpoint: process.env.IMAGEKIT_URL_ENDPOINT
 });
 
+// Add debug logging for environment variables
+console.log('Environment check:');
+console.log('SERIES_IMAGEKIT_PUBLIC_KEY:', process.env.SERIES_IMAGEKIT_PUBLIC_KEY ? 'Set' : 'Missing');
+console.log('SERIES_IMAGEKIT_PRIVATE_KEY:', process.env.SERIES_IMAGEKIT_PRIVATE_KEY ? 'Set' : 'Missing');
+console.log('SERIES_IMAGEKIT_URL_ENDPOINT:', process.env.SERIES_IMAGEKIT_URL_ENDPOINT);
+console.log('SERIES_MUX_TOKEN_ID:', process.env.SERIES_MUX_TOKEN_ID ? 'Set' : 'Missing');
+console.log('SERIES_MUX_TOKEN_SECRET:', process.env.SERIES_MUX_TOKEN_SECRET ? 'Set' : 'Missing');
+
 // Series ImageKit configuration (separate from movies)
 const seriesImagekit = new ImageKit({
      publicKey: process.env.SERIES_IMAGEKIT_PUBLIC_KEY,
@@ -120,7 +128,17 @@ const seriesImagekit = new ImageKit({
      urlEndpoint: process.env.SERIES_IMAGEKIT_URL_ENDPOINT
 });
 
-// Mux configuration
+// Series Mux configuration (separate from movies)
+const seriesMux = new Mux({
+     tokenId: process.env.SERIES_MUX_TOKEN_ID,
+     tokenSecret: process.env.SERIES_MUX_TOKEN_SECRET
+});
+
+// Test configurations
+console.log('Series ImageKit URL Endpoint:', process.env.SERIES_IMAGEKIT_URL_ENDPOINT);
+console.log('Series Mux Token ID:', process.env.SERIES_MUX_TOKEN_ID);
+
+// Initialize Mux client
 const mux = new Mux({
      tokenId: process.env.MUX_TOKEN_ID,
      tokenSecret: process.env.MUX_TOKEN_SECRET
@@ -360,7 +378,10 @@ app.post('/register', async (req, res) => {
 app.post('/mux-direct-upload', async (req, res) => {
      try {
           const upload = await mux.video.uploads.create({
-               new_asset_settings: { playback_policy: 'public' },
+               new_asset_settings: { 
+                    playback_policy: 'public'
+                    // Remove deprecated options
+               },
                cors_origin: '*'
           });
           res.json({ url: upload.url, uploadId: upload.id });
@@ -494,75 +515,127 @@ app.get('/series/:id', async (req, res) => {
 
 
 
-// Upload series to ImageKit and save to database
+// Create Series Mux direct upload URL
+app.post('/series-mux-direct-upload', async (req, res) => {
+     console.log('Creating Series Mux direct upload...');
+     try {
+          const upload = await seriesMux.video.uploads.create({
+               new_asset_settings: { 
+                    playback_policy: 'public'
+                    // Remove the deprecated mp4_support and master_access options
+               },
+               cors_origin: '*'
+          });
+          
+          console.log('Series Mux upload created:', upload.id);
+          res.json({ url: upload.url, uploadId: upload.id });
+     } catch (err) {
+          console.error('Series Mux direct upload error:', err);
+          res.status(500).json({ error: 'Series Mux direct upload failed: ' + err.message });
+     }
+});
+
+// Check Series Mux asset status
+app.get('/series-mux-asset-status/:uploadId', async (req, res) => {
+     const uploadId = req.params.uploadId;
+     console.log(`Checking Series Mux asset status for upload ID: ${uploadId}`);
+     
+     try {
+          const upload = await seriesMux.video.uploads.retrieve(uploadId);
+          console.log('Series Mux upload status:', upload.status);
+          
+          if (upload.asset_id) {
+               const asset = await seriesMux.video.assets.retrieve(upload.asset_id);
+               console.log('Series Mux asset status:', asset.status);
+               
+               const playbackId = asset.playback_ids && asset.playback_ids.length > 0
+                    ? asset.playback_ids[0].id
+                    : null;
+               
+               console.log('Series Mux playback ID:', playbackId);
+               
+               return res.json({ 
+                    ready: asset.status === 'ready', 
+                    playbackId: playbackId,
+                    status: asset.status,
+                    assetId: asset.id
+               });
+          }
+          
+          res.json({ ready: false, status: upload.status });
+     } catch (err) {
+          console.error('Series Mux asset status error:', err);
+          res.status(500).json({ error: 'Series Mux asset status failed: ' + err.message });
+     }
+});
+
+// Upload series with poster to ImageKit and video to Mux
 app.post('/upload-series', memoryUpload.fields([
      { name: 'poster', maxCount: 1 },
      { name: 'video', maxCount: 1 }
 ]), async (req, res) => {
      console.log('Upload series request received');
+     console.log('Request body:', req.body);
+     console.log('Files:', req.files);
 
-     const { title, description } = req.body;
+     const { title, description, playbackId } = req.body;
      const posterBuffer = req.files?.poster?.[0]?.buffer;
-     const videoBuffer = req.files?.video?.[0]?.buffer;
 
-     if (!title || !posterBuffer || !videoBuffer) {
-          return res.status(400).json({ error: 'Title, poster, and video are required' });
+     if (!title || !posterBuffer) {
+          console.log('Missing required fields:', { title: !!title, poster: !!posterBuffer });
+          return res.status(400).json({ error: 'Title and poster are required' });
      }
 
      try {
           const safeTitle = title.replace(/[^a-z0-9]/gi, '_');
           const timestamp = Date.now();
 
+          console.log('Uploading poster to Series ImageKit...');
+          
           // Upload poster to Series ImageKit
           const posterResponse = await seriesImagekit.upload({
                file: posterBuffer,
                fileName: `${safeTitle}-poster-${timestamp}.jpg`,
                isPrivateFile: false,
-               folder: '/series/posters'
+               folder: '/series/posters',
+               tags: ['series', 'poster', safeTitle]
           });
 
-          // Upload video to Series ImageKit
-          const videoResponse = await seriesImagekit.upload({
-               file: videoBuffer,
-               fileName: `${safeTitle}-video-${timestamp}.mp4`,
-               isPrivateFile: false,
-               folder: '/series/videos'
-          });
+          console.log('Poster uploaded successfully:', posterResponse.url);
 
-          console.log('Poster uploaded to Series ImageKit:', posterResponse.url);
-          console.log('Video uploaded to Series ImageKit:', videoResponse.url);
+          // Store only playback ID in video field, not the full URL
+          const videoData = playbackId || '';
+          console.log('Storing playback ID in video field:', videoData);
 
-          // Save to database
-          const result = await queryDB('INSERT INTO series (title, description, poster, video) VALUES (?, ?, ?, ?)',
-               [title, description || '', posterResponse.url, videoResponse.url]);
+          // Save to database - store only playback ID in video field
+          console.log('Saving series to database...');
+          const result = await queryDB(
+               'INSERT INTO series (title, description, poster, video) VALUES (?, ?, ?, ?)',
+               [title, description || '', posterResponse.url, videoData]
+          );
 
-          console.log(`Successfully saved series ${result.insertId}`);
+          console.log(`Successfully saved series with ID: ${result.insertId}`);
+          
           res.json({
                success: true,
                id: result.insertId,
                posterUrl: posterResponse.url,
-               videoUrl: videoResponse.url
+               playbackId: playbackId,
+               message: 'Series uploaded successfully'
           });
 
      } catch (error) {
-          console.error('Error uploading to Series ImageKit:', error);
-          res.status(500).json({ error: 'Error uploading to ImageKit: ' + error.message });
+          console.error('Error uploading series:', error);
+          console.error('Error details:', error.response?.data || error.message);
+          
+          res.status(500).json({ 
+               error: 'Error uploading series: ' + error.message,
+               details: error.response?.data || 'No additional details'
+          });
      }
 });
 
-// Delete series
-app.delete('/series/:id', async (req, res) => {
-     const seriesId = req.params.id;
-     try {
-          await queryDB('DELETE FROM series WHERE id = ?', [seriesId]);
-          res.json({ success: true, message: 'Series deleted successfully' });
-     } catch (err) {
-          console.error('Error deleting series:', err);
-          res.status(500).json({ error: 'Error deleting series' });
-     }
-});
-
-//premium handles
+// premium handles
 app.post('/create-order', async (req, res) => {
      console.log('Create order request:', req.body);
 
