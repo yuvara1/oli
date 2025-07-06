@@ -26,6 +26,7 @@ router.post('/google-login', async (req, res) => {
                     username: existingUsers[0].username,
                     email: existingUsers[0].email,
                     premium: existingUsers[0].premium === 1,
+                    access: existingUsers[0].access || 0,  // ✅ Keep as number, don't convert to boolean
                     message: 'Login successful'
                });
           }
@@ -33,8 +34,8 @@ router.post('/google-login', async (req, res) => {
           // Create new user with premium defaulting to false (0)
           console.log('Creating new user...');
           const result = await Promise.race([
-               queryDB('INSERT INTO users (username, email, password, premium) VALUES (?, ?, ?, ?)',
-                    [username, email, 'google-auth', 0]),
+               queryDB('INSERT INTO users (username, email, password, premium, access) VALUES (?, ?, ?, ?, ?)',
+                    [username, email, 'google-auth', 0, 0]), // ✅ Set access to 0 for new users
                new Promise((_, reject) => setTimeout(() => reject(new Error('Database insert timeout')), 10000))
           ]);
 
@@ -44,6 +45,7 @@ router.post('/google-login', async (req, res) => {
                username,
                email,
                premium: false,
+               access: 0,  // ✅ Default access level to 0
                message: 'Account created and login successful'
           });
      } catch (err) {
@@ -77,8 +79,12 @@ router.post('/login', async (req, res) => {
           if (results.length > 0) {
                console.log('User found:', results[0]);
                return res.json({
-                    ...results[0],
-                    premium: results[0].premium === 1
+                    id: results[0].id,
+                    username: results[0].username,
+                    email: results[0].email,
+                    name: results[0].name,
+                    premium: results[0].premium === 1,
+                    access: results[0].access || 0  // ✅ Keep as number, don't convert to boolean
                });
           } else {
                console.log('Invalid credentials');
@@ -108,8 +114,9 @@ router.post('/register', async (req, res) => {
                return res.status(409).json({ error: 'User already exists' });
           }
 
-          // Create new user
-          const result = await queryDB('INSERT INTO users (username, email, password) VALUES (?, ?, ?)', [username, email, password]);
+          // Create new user with default access level 0
+          const result = await queryDB('INSERT INTO users (username, email, password, access) VALUES (?, ?, ?, ?)',
+               [username, email, password, 0]);
           res.json({ success: true, id: result.insertId });
 
      } catch (err) {

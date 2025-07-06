@@ -231,4 +231,41 @@ router.post('/validate-promo', async (req, res) => {
      }
 });
 
+// Check user access level
+router.get('/check-user-access/:userId', async (req, res) => {
+     const userId = req.params.userId;
+
+     try {
+          const query = 'SELECT access FROM users WHERE id = ?';
+          const results = await queryDB(query, [userId]);
+
+          if (results.length > 0) {
+               res.json({
+                    success: true,
+                    access: results[0].access || 0
+               });
+          } else {
+               res.status(404).json({ error: 'User not found' });
+          }
+     } catch (err) {
+          console.error('Database error:', err);
+          res.status(500).json({ error: 'Database error' });
+     }
+});
+
+// Update user access level (admin only)
+router.post('/update-user-access', async (req, res) => {
+     const { userId, access } = req.body;
+
+     try {
+          const query = 'UPDATE users SET access = ? WHERE id = ?';
+          await queryDB(query, [access, userId]);
+
+          res.json({ success: true, message: 'Access level updated' });
+     } catch (err) {
+          console.error('Database error:', err);
+          res.status(500).json({ error: 'Database error' });
+     }
+});
+
 module.exports = router;

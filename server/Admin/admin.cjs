@@ -274,4 +274,70 @@ router.post('/admin/safe-query', async (req, res) => {
      }
 });
 
+// Admin route to add a new column
+router.post('/admin/add-column/:tableName', async (req, res) => {
+     const tableName = req.params.tableName;
+     const { columnName, columnType, isNullable, defaultValue, extra } = req.body;
+
+     // Validate table name
+     if (!/^[a-zA-Z0-9_]+$/.test(tableName)) {
+          return res.status(400).json({ error: 'Invalid table name' });
+     }
+
+     // Validate column name
+     if (!columnName || !/^[a-zA-Z0-9_]+$/.test(columnName)) {
+          return res.status(400).json({ error: 'Invalid column name' });
+     }
+
+     // Validate column type
+     if (!columnType) {
+          return res.status(400).json({ error: 'Column type is required' });
+     }
+
+     try {
+          // Build ALTER TABLE query
+          let query = `ALTER TABLE \`${tableName}\` ADD COLUMN \`${columnName}\` ${columnType}`;
+
+          // Add NULL/NOT NULL
+          if (isNullable === false) {
+               query += ' NOT NULL';
+          } else {
+               query += ' NULL';
+          }
+
+          // Add default value
+          if (defaultValue && defaultValue !== '') {
+               if (columnType.toLowerCase().includes('varchar') ||
+                    columnType.toLowerCase().includes('text') ||
+                    columnType.toLowerCase().includes('char')) {
+                    query += ` DEFAULT '${defaultValue}'`;
+               } else {
+                    query += ` DEFAULT ${defaultValue}`;
+               }
+          }
+
+          // Add extra (like AUTO_INCREMENT)
+          if (extra && extra !== '') {
+               query += ` ${extra}`;
+          }
+
+          console.log('Add column query:', query);
+
+          const result = await queryDB(query);
+
+          res.json({
+               success: true,
+               message: `Column '${columnName}' added successfully to table '${tableName}'`,
+               query: query
+          });
+
+     } catch (err) {
+          console.error('Error adding column:', err);
+          res.status(500).json({
+               error: 'Error adding column: ' + err.message,
+               details: err.sqlMessage || 'No additional details'
+          });
+     }
+});
+
 module.exports = router;

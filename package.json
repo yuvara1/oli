@@ -4,15 +4,9 @@
   "version": "0.0.0",
   "type": "commonjs",
   "scripts": {
-<<<<<<< HEAD
     "dev": "nodemon server.cjs",
     "start": "node server.cjs",
     "server": "nodemon server.cjs",
-=======
-    "dev": "nodemon ./server/server.cjs",
-    "start": "node ./server/server.cjs",
-    "server": "nodemon ./server/server.cjs",
->>>>>>> 9e9ed88 (ajjj)
     "build": "echo 'Backend build complete'",
     "lint": "eslint ."
   },
